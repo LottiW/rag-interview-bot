@@ -636,10 +636,10 @@ def main():
     col4, col5, col6 = st.columns(3)
 
     with col4:
-        if st.button("🚀 An welchen Projekten arbeiten Sie aktuell?", key="btn_projects"):
+        if st.button("🚀 Welche Projekterfahrung haben Sie bisher gemacht?", key="btn_projects"):
             st.session_state.messages.append({
                 "role": "user",
-                "content": "An welchen Projekten arbeiten Sie aktuell?"
+                "content": "Welche Projekterfahrung haben Sie bisher gemacht?"
             })
             process_quick_question = True
 

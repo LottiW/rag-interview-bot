@@ -3,6 +3,8 @@ import streamlit as st
 import os
 from datetime import datetime
 import uuid
+from utils.document_cleanup import cleanup_old_documents, cleanup_specific_documents, get_document_age_report
+
 
 # Personal Information Secrets
 # Diese müssen in den Streamlit Cloud Secrets konfiguriert werden:
@@ -389,15 +391,193 @@ def main():
                     else:
                         st.error(result["message"])
 
+            # Add this section within your admin mode in the sidebar
+            if st.checkbox("🗑️ Admin-Modus", help="Nur für Dokumentenverwaltung"):
+                st.markdown("---")
+                st.markdown("## 📚 Dokumentenverwaltung")
+
+                # Existing upload section...
+                st.markdown("### ⬆️ Dokument hochladen")
+                # ... your existing upload code ...
+
+                # NEW CLEANUP SECTION
+                st.markdown("---")
+                st.markdown("### 🧹 Dokumente bereinigen")
+
+                # Document age report
+                with st.expander("📊 Dokument-Altersverteilung anzeigen", expanded=False):
+                    if st.button("📈 Bericht generieren"):
+                        with st.spinner("Bericht wird erstellt..."):
+                            report = get_document_age_report()
+
+                            if report["status"] == "success":
+                                st.success(f"📋 {report['total_documents']} Dokumente gefunden")
+
+                                # Age distribution
+                                col1, col2, col3, col4 = st.columns(4)
+                                with col1:
+                                    st.metric("🆕 Letzte 7 Tage", report["age_buckets"]["last_7_days"])
+                                with col2:
+                                    st.metric("📅 Letzte 30 Tage", report["age_buckets"]["last_30_days"])
+                                with col3:
+                                    st.metric("📆 Letzte 90 Tage", report["age_buckets"]["last_90_days"])
+                                with col4:
+                                    st.metric("⏳ Älter als 90 Tage", report["age_buckets"]["older_than_90_days"])
+
+                                # Show oldest documents
+                                if report["oldest_documents"]:
+                                    st.markdown("#### 📜 Älteste Dokumente:")
+                                    for doc in report["oldest_documents"][:5]:  # Show top 5
+                                        st.write(
+                                            f"• **{doc['filename']}** - {doc['days_old']} Tage alt ({doc['upload_date']})")
+
+                            elif report["status"] == "no_documents":
+                                st.info("Keine Dokumente gefunden")
+                            else:
+                                st.error(
+                                    f"Fehler beim Erstellen des Berichts: {report.get('message', 'Unbekannter Fehler')}")
+
+                # Cleanup by age
+                with st.expander("🗓️ Dokumente nach Alter löschen", expanded=False):
+                    st.warning("⚠️ Diese Aktion kann nicht rückgängig gemacht werden!")
+
+                    days_to_keep = st.slider(
+                        "Dokumente der letzten X Tage behalten:",
+                        min_value=7,
+                        max_value=365,
+                        value=90,
+                        step=7,
+                        help="Alle älteren Dokumente werden gelöscht"
+                    )
+
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        if st.button("👁️ Vorschau zeigen (Dry Run)", key="cleanup_preview"):
+                            with st.spinner("Vorschau wird erstellt..."):
+                                result = cleanup_old_documents(days_to_keep=days_to_keep, dry_run=True)
+
+                                if result["status"] == "dry_run":
+                                    if result["documents_to_delete"] > 0:
+                                        st.warning(
+                                            f"⚠️ {result['documents_to_delete']} Dokumente würden gelöscht werden:")
+                                        for doc in result["old_documents"][:10]:  # Show first 10
+                                            st.write(f"• {doc['filename']} ({doc['days_old']} Tage alt)")
+                                        if len(result["old_documents"]) > 10:
+                                            st.write(f"... und {len(result['old_documents']) - 10} weitere")
+                                    else:
+                                        st.success("✅ Keine Dokumente zum Löschen gefunden")
+                                else:
+                                    st.error(f"Fehler: {result.get('message', 'Unbekannter Fehler')}")
+
+                    with col2:
+                        if st.button("🗑️ WIRKLICH LÖSCHEN", type="primary", key="cleanup_execute"):
+                            st.warning("Sind Sie sicher? Diese Aktion kann nicht rückgängig gemacht werden!")
+
+                            if st.button("✅ JA, LÖSCHEN BESTÄTIGEN", key="cleanup_confirm"):
+                                with st.spinner("Lösche Dokumente..."):
+                                    result = cleanup_old_documents(days_to_keep=days_to_keep, dry_run=False)
+
+                                    if result["status"] == "completed":
+                                        st.success(f"✅ {result['successful_deletions']} Dokumente erfolgreich gelöscht")
+                                        if result['failed_deletions'] > 0:
+                                            st.warning(
+                                                f"⚠️ {result['failed_deletions']} Dokumente konnten nicht gelöscht werden")
+
+                                            # Show details of failed deletions
+                                            failed_docs = [d for d in result['deletion_details'] if
+                                                           d['status'] != 'success']
+                                            for doc in failed_docs:
+                                                st.error(
+                                                    f"Fehler bei {doc['filename']}: {doc.get('error', 'Unbekannter Fehler')}")
+                                    else:
+                                        st.error(f"Fehler beim Löschen: {result.get('message', 'Unbekannter Fehler')}")
+
+                # Manual document selection cleanup
+                with st.expander("🎯 Spezifische Dokumente löschen", expanded=False):
+                    st.warning("⚠️ Diese Aktion kann nicht rückgängig gemacht werden!")
+
+                    if st.button("🔄 Dokumentliste laden", key="load_docs_for_cleanup"):
+                        try:
+                            documents = get_all_documents()
+                            if documents:
+                                st.session_state.documents_for_cleanup = documents
+                                st.success(f"✅ {len(documents)} Dokumente geladen")
+                            else:
+                                st.info("Keine Dokumente gefunden")
+                                st.session_state.documents_for_cleanup = []
+                        except Exception as e:
+                            st.error(f"Fehler beim Laden: {e}")
+                            st.session_state.documents_for_cleanup = []
+
+                    # Show document selection if available
+                    if hasattr(st.session_state, 'documents_for_cleanup') and st.session_state.documents_for_cleanup:
+                        st.markdown("**Dokumente zum Löschen auswählen:**")
+
+                        selected_docs = []
+                        for doc in st.session_state.documents_for_cleanup:
+                            # Format upload date
+                            if isinstance(doc['upload_timestamp'], str):
+                                upload_date = doc['upload_timestamp'][:10]
+                            else:
+                                upload_date = doc['upload_timestamp'].strftime('%Y-%m-%d')
+
+                            # Calculate age
+                            if isinstance(doc['upload_timestamp'], str):
+                                doc_date = datetime.strptime(doc['upload_timestamp'][:19], '%Y-%m-%d %H:%M:%S')
+                            else:
+                                doc_date = doc['upload_timestamp']
+                            days_old = (datetime.now() - doc_date).days
+
+                            # Checkbox for selection
+                            if st.checkbox(
+                                    f"{doc['filename']} ({upload_date}, {days_old} Tage alt)",
+                                    key=f"select_doc_{doc['id']}"
+                            ):
+                                selected_docs.append(doc['id'])
+
+                        if selected_docs:
+                            st.info(f"🎯 {len(selected_docs)} Dokumente ausgewählt")
+
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button("👁️ Vorschau", key="manual_cleanup_preview"):
+                                    result = cleanup_specific_documents(selected_docs, dry_run=True)
+                                    if result["status"] == "dry_run":
+                                        st.warning(
+                                            f"⚠️ {result['documents_to_delete']} Dokumente würden gelöscht werden")
+
+                            with col2:
+                                if st.button("🗑️ Ausgewählte löschen", type="primary", key="manual_cleanup_execute"):
+                                    with st.spinner("Lösche ausgewählte Dokumente..."):
+                                        result = cleanup_specific_documents(selected_docs, dry_run=False)
+
+                                        if result["status"] == "completed":
+                                            st.success(f"✅ {result['successful_deletions']} Dokumente gelöscht")
+                                            if result['failed_deletions'] > 0:
+                                                st.warning(
+                                                    f"⚠️ {result['failed_deletions']} Dokumente konnten nicht gelöscht werden")
+
+                                            # Refresh the document list
+                                            del st.session_state.documents_for_cleanup
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Fehler: {result.get('message', 'Unbekannter Fehler')}")
+
             # Document List Display (vereinfacht für standalone)
             st.markdown("### 📋 Hochgeladene Dokumente")
-            if st.button("🔄 Liste aktualisieren"):
+            if st.button("📄 Liste aktualisieren"):
                 try:
                     documents = get_all_documents()
                     if documents:
                         st.write(f"📊 {len(documents)} Dokumente gefunden")
                         for doc in documents[-5:]:  # Letzte 5 anzeigen
-                            upload_date = doc['upload_timestamp'][:10]
+                            # Proper datetime formatting
+                            if isinstance(doc['upload_timestamp'], str):
+                                upload_date = doc['upload_timestamp'][:10]
+                            else:
+                                # It's a datetime object
+                                upload_date = doc['upload_timestamp'].strftime('%Y-%m-%d')
                             st.text(f"• {doc['filename']} ({upload_date})")
                     else:
                         st.info("Keine Dokumente gefunden")
@@ -429,7 +609,7 @@ def main():
 
     # Erste Reihe
     with col1:
-        if st.button("🎓 Ausbildung & Qualifikationen", key="btn_education"):
+        if st.button("🎓 Erzählen Sie mir von Ihrer Ausbildung und Ihren Qualifikationen.", key="btn_education"):
             st.session_state.messages.append({
                 "role": "user",
                 "content": "Erzählen Sie mir von Ihrer Ausbildung und Ihren Qualifikationen."
@@ -437,7 +617,7 @@ def main():
             process_quick_question = True
 
     with col2:
-        if st.button("💼 Berufserfahrung", key="btn_experience"):
+        if st.button("💼 Welche beruflichen Erfahrungen haben Sie gesammelt?", key="btn_experience"):
             st.session_state.messages.append({
                 "role": "user",
                 "content": "Welche beruflichen Erfahrungen haben Sie gesammelt?"
@@ -445,7 +625,7 @@ def main():
             process_quick_question = True
 
     with col3:
-        if st.button("🛠️ Technische Skills", key="btn_skills"):
+        if st.button("🛠️ Welche technischen Fähigkeiten und Tools beherrschen Sie?", key="btn_skills"):
             st.session_state.messages.append({
                 "role": "user",
                 "content": "Welche technischen Fähigkeiten und Tools beherrschen Sie?"
@@ -456,7 +636,7 @@ def main():
     col4, col5, col6 = st.columns(3)
 
     with col4:
-        if st.button("🚀 Aktuelle Projekte", key="btn_projects"):
+        if st.button("🚀 An welchen Projekten arbeiten Sie aktuell?", key="btn_projects"):
             st.session_state.messages.append({
                 "role": "user",
                 "content": "An welchen Projekten arbeiten Sie aktuell?"
@@ -464,7 +644,7 @@ def main():
             process_quick_question = True
 
     with col5:
-        if st.button("📈 Karriereziele", key="btn_goals"):
+        if st.button("📈 Was sind Ihre beruflichen Ziele?", key="btn_goals"):
             st.session_state.messages.append({
                 "role": "user",
                 "content": "Was sind Ihre beruflichen Ziele?"
@@ -472,7 +652,7 @@ def main():
             process_quick_question = True
 
     with col6:
-        if st.button("📧 Kontakt", key="btn_contact"):
+        if st.button("📧 Wie kann ich Sie kontaktieren", key="btn_contact"):
             st.session_state.messages.append({
                 "role": "user",
                 "content": "Wie kann ich Sie kontaktieren?"

@@ -523,8 +523,8 @@ def get_retriever(search_kwargs=None):
 
     if search_kwargs is None:
         search_kwargs = {
-            "k": 4,
-            "score_threshold": 0.5
+            "k": 6,
+            "score_threshold": 0.6
         }
 
     logger.debug(f"Retriever search kwargs: {search_kwargs}")

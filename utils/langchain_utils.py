@@ -29,17 +29,19 @@ except Exception as e:
 
 # Import retriever with proper error handling
 retriever = None
+vectorstore = None
+
 try:
     if OPENAI_API_KEY:
-        from .pinecone_utils import get_retriever
+        # GEÄNDERT: Importiere sowohl get_retriever als auch vectorstore
+        from .pinecone_utils import get_retriever, vectorstore as pinecone_vectorstore
 
-        retriever = get_retriever(
-            search_kwargs={
-                "k": 3,
-                "score_threshold": 0.7
-            }
-        )
-        logger.info("Retriever initialized successfully")
+        retriever = get_retriever()
+
+        # Vectorstore verfügbar machen
+        vectorstore = pinecone_vectorstore
+
+        logger.info("Retriever and vectorstore initialized successfully")
     else:
         logger.error("Cannot initialize retriever without valid OpenAI API key")
 except ImportError as e:
@@ -53,12 +55,14 @@ output_parser = StrOutputParser()
 
 # Improved contextualization prompt
 contextualize_q_system_prompt = (
-    "Du bist ein AI-Assistant, der Recruitern dabei hilft, Informationen über einen Kandidaten zu erhalten. "
+    "Du bist ein AI-Assistant, der Recruitern dabei hilft, umfassende Informationen über Charlotte Wangemann zu erhalten. "
     "Gegeben ist eine Chat-Historie und die neueste Benutzerfrage, die sich möglicherweise auf den Kontext "
-    "in der Chat-Historie bezieht. Formuliere eine eigenständige Frage, die ohne die Chat-Historie "
-    "verstanden werden kann. "
-    "Beantworte die Frage NICHT, sondern formuliere sie nur um, falls nötig, ansonsten gib sie unverändert zurück. "
-    "Achte besonders auf Recruiter-spezifische Begriffe wie 'Skills', 'Erfahrung', 'Verfügbarkeit', etc."
+    "in der Chat-Historie bezieht. Formuliere eine präzise, eigenständige Frage, die alle relevanten Details "
+    "aus dem Dokument abrufen kann und eine vollständige Antwort in Fließtext ermöglicht. "
+    "Beantworte die Frage NICHT, sondern erweitere sie bei Bedarf um wichtige Aspekte wie Zeiträume, "
+    "spezifische Aufgaben, Erfolge und Qualifikationen. "
+    "Fokussiere auf Recruiter-relevante Informationen wie berufliche Erfahrungen, Fähigkeiten, "
+    "Ausbildung, Projekte und Erfolge."
 )
 
 contextualize_q_prompt = ChatPromptTemplate.from_messages([
@@ -68,41 +72,49 @@ contextualize_q_prompt = ChatPromptTemplate.from_messages([
 ])
 
 # Specialized QA prompt for recruiter requests
-qa_system_prompt = """Du bist ein AI-Assistant für Charlotte Wangemann, der Recruitern AUSSCHLIESSLICH verifizierte Informationen bereitstellt.
+qa_system_prompt = """Du bist ein professioneller AI-Assistant für Charlotte Wangemann, der Recruitern detaillierte, narrative Antworten in natürlichem Fließtext bereitstellt.
 
-🚨 KRITISCHE REGELN - NIEMALS BRECHEN:
-1. ✅ NUR FAKTEN: Verwende AUSSCHLIESSLICH Informationen aus dem bereitgestellten Kontext
-2. ❌ KEINE ERFINDUNGEN: Erfinde NIEMALS Details, die nicht explizit im Kontext stehen
-3. 🔍 VERIFIZIERUNG: Wenn eine Information nicht im Kontext steht, sage: "Diese Information liegt mir nicht vor"
-4. 📝 WÖRTLICH: Bei konkreten Fakten (Positionen, Zeiträume, Projekte) bleibe EXAKT beim Kontext
+HAUPTZIEL: Erstelle umfassende, flüssig lesbare Antworten, die alle relevanten Details aus dem Kontext in zusammenhängenden Absätzen präsentieren.
 
-WICHTIGE UNTERSCHEIDUNGEN:
-- Werkstudium ≠ Praktikum (verwende die exakte Bezeichnung aus dem Kontext)
-- Verwende nur die tatsächlichen Projektnamen aus dem Kontext
-- Nenne nur die Ehrenämter, die explizit erwähnt werden
+ANTWORT-STIL:
+- Verwende AUSSCHLIESSLICH natürlichen Fließtext in gut strukturierten Absätzen
+- KEINE Aufzählungspunkte, Listen oder Bullet Points
+- KEINE Emojis oder spezielle Formatierungen
+- Schreibe wie ein professioneller Recruiter-Brief oder Bewerbungstext
+- Verbinde zusammengehörige Informationen in logischen Absätzen
+- Verwende Übergänge und Bindewörter für flüssigen Lesefluss
 
-ANTWORTSTRUKTUR:
-1. Prüfe zuerst: Steht die gefragte Information im Kontext?
-   - JA → Antworte präzise mit den vorhandenen Informationen
-   - NEIN → "Diese spezifische Information liegt mir nicht vor. Für Details kontaktieren Sie bitte Charlotte direkt."
+INHALTLICHE ANFORDERUNGEN:
+1. NUR FAKTEN: Verwende AUSSCHLIESSLICH Informationen aus dem bereitgestellten Kontext
+2. KEINE ERFINDUNGEN: Erfinde NIEMALS Details, die nicht explizit im Kontext stehen
+3. VOLLSTÄNDIGKEIT: Integriere ALLE relevanten Details aus dem Kontext in die Antwort
+4. ZUSAMMENHANG: Verknüpfe verwandte Informationen thematisch in Absätzen
+5. ZEITLICHER KONTEXT: Erwähne Zeiträume und chronologische Zusammenhänge
 
-2. Bei teilweisen Informationen:
-   - Sage klar, was du weißt: "Basierend auf den vorliegenden Informationen..."
-   - Sage klar, was fehlt: "Zu [spezifischer Aspekt] liegen mir keine Details vor."
+STRUKTUR FÜR UMFASSENDE ANTWORTEN:
+- Einleitender Überblick über das angefragte Thema
+- Detaillierte Darstellung aller relevanten Aspekte in zusammenhängenden Absätzen
+- Chronologische oder thematische Gruppierung von Informationen
+- Abschließende Einordnung oder Zusammenfassung
+
+BEISPIEL-TRANSFORMATION:
+❌ Schlecht (Listen-Format):
+"Charlotte hat folgende Positionen:
+• Werkstudentin bei SAP SE (2024-2025)
+• Studentische Hilfskraft Uni Leipzig (2023-2024)"
+
+✅ Gut (Fließtext-Format):
+"Charlotte sammelte ihre beruflichen Erfahrungen in zwei wesentlichen Bereichen. Von Oktober 2023 bis September 2024 war sie als studentische Hilfskraft am Lehrstuhl für Arbeits- und Organisationspsychologie der Universität Leipzig tätig, wo sie bei Literaturrecherchen, der Erstellung von Literaturverzeichnissen und der Vorbereitung von Meta-Analysen mitwirkte. Parallel dazu begann sie im Oktober 2024 ihre Tätigkeit als Werkstudentin im Transformation Office bei SAP SE, wo sie eine organisationsweite Cloud-ERP-Transformation unterstützt und eigenständig Interviews mit Führungskräften konzipiert und analysiert."
 
 KONTEXTINFORMATIONEN:
 {context}
 
-NIEMALS:
-- Interpretiere oder extrapoliere über den Kontext hinaus
-- Füge plausible aber nicht belegte Details hinzu
-- Rate oder vermute bei fehlenden Informationen
-- Verwende Standardantworten, wenn spezifische Infos fehlen
-
-IMMER:
-- Zitiere nur exakt aus dem Kontext
-- Kennzeichne Unsicherheiten deutlich
-- Verweise bei fehlenden Infos auf direkten Kontakt"""
+WICHTIGE REGELN:
+- Bei unvollständigen Informationen: Sage klar was verfügbar ist und was fehlt
+- Bei fehlenden Informationen: "Diese spezifische Information liegt mir nicht vor"
+- Verwende Formulierungen wie "basierend auf den vorliegenden Informationen"
+- Zitiere niemals wörtlich, sondern integriere Informationen natürlich
+- Schreibe immer in der dritten Person über Charlotte"""
 
 qa_prompt = ChatPromptTemplate.from_messages([
     ("system", qa_system_prompt),
@@ -112,7 +124,7 @@ qa_prompt = ChatPromptTemplate.from_messages([
 
 
 def get_rag_chain(model="gpt-4o-mini"):
-    """Creates a RAG chain with enhanced validation"""
+    """Creates a RAG chain with enhanced validation and better retrieval"""
 
     if not OPENAI_API_KEY:
         raise ValueError("OpenAI API key not available")
@@ -134,10 +146,13 @@ def get_rag_chain(model="gpt-4o-mini"):
         return create_fallback_chain(llm)
 
     try:
+        # HIER IST DIE ÄNDERUNG: Enhanced retriever mit mehr Kontext
+        enhanced_retriever = get_enhanced_retriever()
+
         # History-aware retriever for contextual search
         history_aware_retriever = create_history_aware_retriever(
             llm,
-            retriever,
+            enhanced_retriever,  # Verwende den enhanced retriever
             contextualize_q_prompt
         )
 
@@ -150,13 +165,57 @@ def get_rag_chain(model="gpt-4o-mini"):
             question_answer_chain
         )
 
-        logger.info("RAG chain created successfully with retriever")
+        logger.info("RAG chain created successfully with enhanced retriever")
         return rag_chain
 
     except Exception as e:
         logger.error(f"Error creating RAG chain: {e}")
         logger.info("Falling back to simple chain without retriever")
         return create_fallback_chain(llm)
+
+
+def get_enhanced_retriever():
+    """Enhanced retriever with more comprehensive search parameters"""
+    if vectorstore is None:
+        logger.error("Cannot create retriever: vector store not initialized")
+        raise ValueError("Vector store not initialized")
+
+    # HIER SIND DIE SEARCH_KWARGS ANPASSUNGEN:
+    enhanced_search_kwargs = {
+        "k": 8,  # Mehr Dokumente abrufen für umfassendere Antworten
+        "score_threshold": 0.6  # Niedrigere Schwelle für mehr Kontext
+    }
+
+    logger.debug(f"Enhanced retriever search kwargs: {enhanced_search_kwargs}")
+
+    return vectorstore.as_retriever(
+        search_type="similarity_score_threshold",
+        search_kwargs=enhanced_search_kwargs
+    )
+
+
+# Zusätzlich: Update der bestehenden get_retriever Funktion
+def get_retriever(search_kwargs=None):
+    """Get Pinecone retriever with debugging - updated with better defaults"""
+    logger.debug("Creating Pinecone retriever...")
+
+    if vectorstore is None:
+        logger.error("Cannot create retriever: vector store not initialized")
+        raise ValueError("Vector store not initialized")
+
+    if search_kwargs is None:
+        # HIER AUCH ANGEPASST: Bessere Default-Werte für umfassendere Antworten
+        search_kwargs = {
+            "k": 6,  # Erhöht von 4 auf 6
+            "score_threshold": 0.6  # Gesenkt von 0.5 auf 0.6
+        }
+
+    logger.debug(f"Retriever search kwargs: {search_kwargs}")
+
+    return vectorstore.as_retriever(
+        search_type="similarity_score_threshold",
+        search_kwargs=search_kwargs
+    )
 
 
 def create_fallback_chain(llm):
@@ -186,17 +245,6 @@ def get_standard_responses():
 - LinkedIn: [LinkedIn Profil](https://www.linkedin.com/in/charlotte-wangemann/)
 
 Ich freue mich über Ihre Kontaktaufnahme und stehe gerne für ein persönliches Gespräch zur Verfügung!
-            """
-        },
-        "verfügbarkeit": {
-            "keywords": ["verfügbar", "kündigungsfrist", "start", "wechsel"],
-            "response": """
-📅 **Verfügbarkeit:**
-- Kündigungsfrist: 3 Monate (verhandelbar je nach Situation)
-- Bereitschaft für Remote-Work: Ja
-- Bereitschaft für Umzug: Je nach Standort
-
-Für spezifische Zeitpläne können wir gerne direkt sprechen!
             """
         }
     }
